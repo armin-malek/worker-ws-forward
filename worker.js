@@ -1,31 +1,52 @@
+import { connect } from "cloudflare:sockets";
+
 export default {
   async fetch(request) {
+
     if (request.headers.get("Upgrade") !== "websocket") {
-      return new Response("WebSocket required", { status: 400 });
+      return new Response("WebSocket tunnel endpoint", { status: 200 });
     }
 
-    const target = "wss://srv-v0.netmaster.cam:3306";
+    const pair = new WebSocketPair();
+    const client = pair[0];
+    const ws = pair[1];
+    ws.accept();
 
-    const wsPair = new WebSocketPair();
-    const [client, worker] = Object.values(wsPair);
+    let socket;
+    let writer;
+    let reader;
 
-    worker.accept();
+    ws.addEventListener("message", async (event) => {
+      const data = new Uint8Array(event.data);
 
-    const server = new WebSocket(target);
+      // First packet contains target info
+      if (!socket) {
+        const text = new TextDecoder().decode(data);
+        const [host, port] = text.split(":");
 
-    server.onopen = () => {
-      worker.addEventListener("message", msg => {
-        server.send(msg.data);
-      });
+        socket = connect({
+          hostname: host,
+          port: parseInt(port)
+        });
 
-      server.addEventListener("message", msg => {
-        worker.send(msg.data);
-      });
-    };
+        writer = socket.writable.getWriter();
+        reader = socket.readable.getReader();
 
-    return new Response(null, {
-      status: 101,
-      webSocket: client
+        pipe();
+        return;
+      }
+
+      await writer.write(data);
     });
+
+    async function pipe() {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        ws.send(value);
+      }
+    }
+
+    return new Response(null, { status: 101, webSocket: client });
   }
 };
